@@ -34,7 +34,8 @@ function CacheController:new(backend, config)
             misses = { l1d = 0, l1i = 0, l2 = 0, l3 = 0 },
             evictions = { l1d = 0, l1i = 0, l2 = 0, l3 = 0 },
             writebacks = { l1d = 0, l1i = 0, l2 = 0, l3 = 0 },
-            fills = { l1d = 0, l1i = 0, l2 = 0, l3 = 0 }
+            fills = { l1d = 0, l1i = 0, l2 = 0, l3 = 0 },
+            prefetches = { l1d = 0, l1i = 0, l2 = 0, l3 = 0 }
         }
     }
 
@@ -282,7 +283,7 @@ function CacheController:install_line(block_address, level_name, data, is_write)
     return line
 end
 
--- Read line (fills on miss)
+-- Demand read
 function CacheController:read(address, size, cache_type)
     cache_type = cache_type or "l1d"
     local hit, block_addr, _, _, line = self:access(address, cache_type, false)
@@ -309,6 +310,17 @@ function CacheController:read(address, size, cache_type)
     return mem_data
 end
 
+-- No-stats prefetch into a target level (typically L2).
+function CacheController:prefetch_line(level_name, block_address)
+    local _, _, _, line = self:find_line(level_name, block_address)
+    if line and line.valid then return end
+    local cache = self.levels[level_name]
+    local line_size = cache.line_size
+    local bytes = self.backend:read_bytes(block_address, line_size)
+    self:install_line(block_address, level_name, bytes, false)
+    self.statistics.prefetches[level_name] = (self.statistics.prefetches[level_name] or 0) + 1
+end
+
 -- Write bytes through cache (handles line splits)
 function CacheController:write_bytes(address, bytes, cache_type)
     cache_type = cache_type or "l1d"
@@ -332,7 +344,7 @@ function CacheController:write_bytes(address, bytes, cache_type)
     end
 end
 
--- Flushes
+-- Flushes and stats
 function CacheController:flush_line(address, level_name)
     local cache = self.levels[level_name]
     if not cache then return false end
@@ -375,7 +387,8 @@ function CacheController:get_statistics()
             hits = hits, misses = misses, hit_rate = total > 0 and hits / total or 0,
             evictions = self.statistics.evictions[name] or 0,
             writebacks = self.statistics.writebacks[name] or 0,
-            fills = self.statistics.fills[name] or 0
+            fills = self.statistics.fills[name] or 0,
+            prefetches = self.statistics.prefetches[name] or 0
         }
     end
     return stats
